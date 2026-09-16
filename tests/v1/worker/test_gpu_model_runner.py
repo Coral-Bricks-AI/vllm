@@ -459,6 +459,89 @@ def test_preferred_block_size_rejects_backends_with_no_common_size():
         Platform._preferred_block_size_for_backends(classes, 16, None)
 
 
+def test_kernel_block_granularity_is_the_lcm():
+    # 24 is not a multiple of 16, so a max()-based regression returns 24.
+    a, b = _mock_backend([MultipleOf(16)]), _mock_backend([24])
+    assert Platform._kernel_block_granularity([a, b]) == 48
+    assert Platform._kernel_block_granularity([a]) == 16
+
+
+def _alignment_config(**cache_kwargs):
+    cache_config = SimpleNamespace(
+        block_size=16, mamba_page_size_padded=None, **cache_kwargs
+    )
+    return cache_config, SimpleNamespace(
+        cache_config=cache_config,
+        model_config=SimpleNamespace(
+            use_mla=False,
+            dtype=torch.float16,
+            architecture="HybridForTest",
+            get_num_kv_heads=lambda _parallel_config: 1,
+            get_head_size=lambda: 64,
+        ),
+        parallel_config=SimpleNamespace(),
+    )
+
+
+@pytest.mark.parametrize("exact", [False, True])
+def test_hybrid_alignment_checks_every_backend_accepts_the_result(monkeypatch, exact):
+    # Alignment rounds the attention block up in multiples of the smallest
+    # kernel block. An exact-size backend has no multiple to round to, so the
+    # result must be refused rather than handed to a kernel that cannot run it.
+    from vllm.model_executor.models import ModelRegistry
+
+    class _HybridModel:
+        @staticmethod
+        def get_mamba_state_shape_from_config(vllm_config):
+            return ((1, 4096),)
+
+        @staticmethod
+        def get_mamba_state_dtype_from_config(vllm_config):
+            return (torch.float32,)
+
+    monkeypatch.setattr(
+        ModelRegistry, "resolve_model_cls", lambda *_a, **_k: (_HybridModel, "")
+    )
+    cache_config, vllm_config = _alignment_config(
+        cache_dtype="auto",
+        mamba_block_size=None,
+        user_specified_mamba_block_size=False,
+        mamba_cache_mode="none",
+        kv_cache_dtype_skip_layers=None,
+    )
+    backend = (
+        _mock_backend([16], exact=exact) if exact else _mock_backend([MultipleOf(16)])
+    )
+
+    if exact:
+        with pytest.raises(ValueError, match="block size 64"):
+            Platform._align_hybrid_block_size(vllm_config, [backend])
+    else:
+        Platform._align_hybrid_block_size(vllm_config, [backend])
+        assert cache_config.block_size == 64
+
+
+@pytest.mark.parametrize("exact", [False, True])
+def test_heterogeneous_kv_alignment_checks_every_backend_accepts_the_result(exact):
+    # An fp8 primary sharing the pool with unquantized skip layers grows the
+    # primary block until its page covers the wider skip page.
+    cache_config, vllm_config = _alignment_config(
+        cache_dtype="fp8",
+        kv_cache_dtype_skip_layers=["model.layers.0.self_attn.attn"],
+    )
+    vllm_config.model_config.dtype = torch.bfloat16
+    backend = (
+        _mock_backend([16], exact=exact) if exact else _mock_backend([MultipleOf(16)])
+    )
+
+    if exact:
+        with pytest.raises(ValueError, match="block size 32"):
+            Platform._align_heterogeneous_kv_block_size(vllm_config, [backend])
+    else:
+        Platform._align_heterogeneous_kv_block_size(vllm_config, [backend])
+        assert cache_config.block_size == 32
+
+
 def test_set_active_mm_loras_builds_tower_and_connector_mappings():
     model = Mock()
     model.get_mm_lora_token_counts.side_effect = (

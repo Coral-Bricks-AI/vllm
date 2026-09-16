@@ -396,7 +396,7 @@ class CpuPlatform(Platform):
         if not backend_classes:
             return
 
-        cls._align_hybrid_block_size(vllm_config, backend_classes[0])
+        cls._align_hybrid_block_size(vllm_config, backend_classes)
 
     @classmethod
     def discover_numa_topology(cls) -> list[list[int]]:

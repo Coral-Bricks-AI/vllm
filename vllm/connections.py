@@ -12,12 +12,6 @@ import aiohttp
 import requests
 from urllib3.util import parse_url
 
-from vllm.utils.media_network_safety import (
-    UnsafeMediaURLError,
-    assert_safe_media_url,
-    redirect_target,
-)
-
 import vllm.envs as envs
 from vllm.logger import init_logger
 from vllm.version import __version__ as VLLM_VERSION
@@ -31,8 +25,6 @@ _T = TypeVar("_T")
 # Attempt N uses: base_timeout * (_RETRY_BACKOFF_FACTOR ** N) for the
 # per-attempt timeout and sleeps _RETRY_BACKOFF_FACTOR ** N seconds.
 _RETRY_BACKOFF_FACTOR = 4
-
-_MAX_REDIRECT_HOPS = 10
 
 
 def _is_retryable(exc: Exception) -> bool:
@@ -287,24 +279,12 @@ class HTTPConnection:
     def get_bytes(
         self, url: str, *, timeout: float | None = None, allow_redirects: bool = True
     ) -> bytes:
-        assert_safe_media_url(url)
-        for hop in range(_MAX_REDIRECT_HOPS + 1):
-            response = self.get_response(url, timeout=timeout, allow_redirects=False)
-            if response.is_redirect:
-                if hop == _MAX_REDIRECT_HOPS:
-                    response.close()
-                    raise UnsafeMediaURLError("Media fetch exceeded the redirect limit.")
-                location = response.headers.get("Location")
-                response.close()
-                if not location:
-                    raise UnsafeMediaURLError("Media fetch redirect has no Location.")
-                url = redirect_target(url, location)
-                assert_safe_media_url(url)
-                continue
-            with response:
-                response.raise_for_status()
-                return response.content
-        raise UnsafeMediaURLError("Media fetch exceeded the redirect limit.")
+        with self.get_response(
+            url, timeout=timeout, allow_redirects=allow_redirects
+        ) as r:
+            r.raise_for_status()
+
+            return r.content
 
     @_async_retry
     async def async_get_bytes(
@@ -314,26 +294,12 @@ class HTTPConnection:
         timeout: float | None = None,
         allow_redirects: bool = True,
     ) -> bytes:
-        assert_safe_media_url(url)
-        for hop in range(_MAX_REDIRECT_HOPS + 1):
-            response = await self.get_async_response(
-                url, timeout=timeout, allow_redirects=False
-            )
-            if response.status in (301, 302, 303, 307, 308):
-                if hop == _MAX_REDIRECT_HOPS:
-                    await response.release()
-                    raise UnsafeMediaURLError("Media fetch exceeded the redirect limit.")
-                location = response.headers.get("Location")
-                await response.release()
-                if not location:
-                    raise UnsafeMediaURLError("Media fetch redirect has no Location.")
-                url = redirect_target(url, location)
-                assert_safe_media_url(url)
-                continue
-            async with response:
-                response.raise_for_status()
-                return await response.read()
-        raise UnsafeMediaURLError("Media fetch exceeded the redirect limit.")
+        async with await self.get_async_response(
+            url, timeout=timeout, allow_redirects=allow_redirects
+        ) as r:
+            r.raise_for_status()
+
+            return await r.read()
 
     def get_text(self, url: str, *, timeout: float | None = None) -> str:
         with self.get_response(url, timeout=timeout) as r:

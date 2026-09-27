@@ -31,7 +31,6 @@ from vllm.utils.registry import ExtensionManager
 from .audio import AudioEmbeddingMediaIO, AudioMediaIO
 from .base import MediaIO, MediaWithBytes
 from .image import ImageEmbeddingMediaIO, ImageMediaIO
-from .network_safety import assert_safe_media_url
 from .video import VideoMediaIO
 
 logger = init_logger(__name__)
@@ -363,7 +362,6 @@ class MediaConnector:
         url_spec = parse_url(url)
 
         if url_spec.scheme and url_spec.scheme.startswith("http"):
-            assert_safe_media_url(url)
             self._assert_url_in_allowed_media_domains(url_spec)
 
             cached = self._get_cached_bytes(url)
@@ -410,7 +408,6 @@ class MediaConnector:
         url_spec = parse_url(url)
 
         if url_spec.scheme and url_spec.scheme.startswith("http"):
-            assert_safe_media_url(url)
             self._assert_url_in_allowed_media_domains(url_spec)
 
             cached = await loop.run_in_executor(

@@ -13,6 +13,12 @@ import requests
 from urllib3.util import parse_url
 
 import vllm.envs as envs
+from vllm.utils.media_network_safety import (
+    UnsafeMediaURLError,
+    assert_safe_media_url,
+    is_media_redirect,
+    redirect_target,
+)
 from vllm.logger import init_logger
 from vllm.version import __version__ as VLLM_VERSION
 
@@ -25,6 +31,7 @@ _T = TypeVar("_T")
 # Attempt N uses: base_timeout * (_RETRY_BACKOFF_FACTOR ** N) for the
 # per-attempt timeout and sleeps _RETRY_BACKOFF_FACTOR ** N seconds.
 _RETRY_BACKOFF_FACTOR = 4
+_MEDIA_REDIRECT_HOPS = 10
 
 
 def _is_retryable(exc: Exception) -> bool:
@@ -300,6 +307,63 @@ class HTTPConnection:
             r.raise_for_status()
 
             return await r.read()
+
+    @_sync_retry
+    def get_media_bytes(self, url: str, *, timeout: float | None = None) -> bytes:
+        """Fetch caller-supplied media, validating every host and redirect.
+
+        This is intentionally separate from :meth:`get_bytes`: generic model
+        and file downloads may use private networks or their own redirect
+        policy. Media URLs come from API callers and must not cause the serving
+        process to connect to its own VPC, loopback, or metadata endpoints.
+        """
+        assert_safe_media_url(url)
+        for hop in range(_MEDIA_REDIRECT_HOPS + 1):
+            response = self.get_response(url, timeout=timeout, allow_redirects=False)
+            if is_media_redirect(response):
+                if hop == _MEDIA_REDIRECT_HOPS:
+                    response.close()
+                    raise UnsafeMediaURLError("Media fetch exceeded the redirect limit.")
+                location = response.headers.get("Location")
+                response.close()
+                if not location:
+                    raise UnsafeMediaURLError("Media fetch redirect has no Location.")
+                url = redirect_target(url, location)
+                assert_safe_media_url(url)
+                continue
+            with response:
+                response.raise_for_status()
+                return response.content
+        raise UnsafeMediaURLError("Media fetch exceeded the redirect limit.")
+
+    @_async_retry
+    async def async_get_media_bytes(
+        self,
+        url: str,
+        *,
+        timeout: float | None = None,
+    ) -> bytes:
+        """Async counterpart of :meth:`get_media_bytes`."""
+        assert_safe_media_url(url)
+        for hop in range(_MEDIA_REDIRECT_HOPS + 1):
+            response = await self.get_async_response(
+                url, timeout=timeout, allow_redirects=False
+            )
+            if is_media_redirect(response):
+                if hop == _MEDIA_REDIRECT_HOPS:
+                    await response.release()
+                    raise UnsafeMediaURLError("Media fetch exceeded the redirect limit.")
+                location = response.headers.get("Location")
+                await response.release()
+                if not location:
+                    raise UnsafeMediaURLError("Media fetch redirect has no Location.")
+                url = redirect_target(url, location)
+                assert_safe_media_url(url)
+                continue
+            async with response:
+                response.raise_for_status()
+                return await response.read()
+        raise UnsafeMediaURLError("Media fetch exceeded the redirect limit.")
 
     def get_text(self, url: str, *, timeout: float | None = None) -> str:
         with self.get_response(url, timeout=timeout) as r:

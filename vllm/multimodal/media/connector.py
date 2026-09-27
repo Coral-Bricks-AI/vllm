@@ -31,6 +31,7 @@ from vllm.utils.registry import ExtensionManager
 from .audio import AudioEmbeddingMediaIO, AudioMediaIO
 from .base import MediaIO, MediaWithBytes
 from .image import ImageEmbeddingMediaIO, ImageMediaIO
+from vllm.utils.media_network_safety import assert_safe_media_url
 from .video import VideoMediaIO
 
 logger = init_logger(__name__)
@@ -370,10 +371,9 @@ class MediaConnector:
 
             connection = self.connection
             try:
-                data = connection.get_bytes(
+                data = connection.get_media_bytes(
                     url_spec.url,
                     timeout=fetch_timeout,
-                    allow_redirects=envs.VLLM_MEDIA_URL_ALLOW_REDIRECTS,
                 )
             except Exception as e:
                 wrapped = _wrap_media_fetch_error(url, e)
@@ -421,10 +421,9 @@ class MediaConnector:
 
             connection = self.connection
             try:
-                data = await connection.async_get_bytes(
+                data = await connection.async_get_media_bytes(
                     url_spec.url,
                     timeout=fetch_timeout,
-                    allow_redirects=envs.VLLM_MEDIA_URL_ALLOW_REDIRECTS,
                 )
             except Exception as e:
                 wrapped = _wrap_media_fetch_error(url, e)
